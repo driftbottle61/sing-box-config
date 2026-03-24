@@ -1,0 +1,180 @@
+log:
+  level: info
+
+plugins:
+
+################################
+# DNS缓存
+################################
+  - tag: cache
+    type: cache
+    args:
+      size: 30000
+      lazy_cache_ttl: 86400
+
+################################
+# hosts
+################################
+  - tag: hosts
+    type: hosts
+    args:
+      files:
+        - "/etc/mosdns/hosts"
+
+################################
+# 国内IP库
+################################
+  - tag: local_ip
+    type: ip_set
+    args:
+      files:
+        - /etc/mosdns/china_ip_list.txt
+        - /etc/mosdns/myvpsip.txt
+
+################################
+# 国内DNS
+################################
+  - tag: forward_local
+    type: forward
+    args:
+      concurrent: 3
+      upstreams:
+        - addr: udp://119.29.29.29
+        - addr: udp://223.5.5.5
+        - addr: udp://180.76.76.76
+
+################################
+# sing-box DNS
+################################
+  - tag: forward_proxy
+    type: forward
+    args:
+      concurrent: 2
+      upstreams:
+        - addr: 192.168.100.10:1053
+
+################################
+# unbound root递归
+################################
+  - tag: forward_recursive
+    type: forward
+    args:
+      upstreams:
+        - addr: 192.168.100.13:5335
+
+################################
+# 国内解析逻辑
+################################
+  - tag: local_sequence
+    type: sequence
+    args:
+
+      - exec: $forward_local
+
+      - matches: resp_ip $local_ip
+        exec: accept
+
+################################
+# 国外解析逻辑
+################################
+  - tag: proxy_sequence
+    type: sequence
+    args:
+
+      - exec: $forward_proxy
+
+      - matches: "!resp_ip $local_ip"
+        exec: ipset gfwlist,inet,32
+
+      - matches: has_resp
+        exec: accept
+
+      # proxy DNS失败
+      - exec: $forward_recursive
+      - exec: accept
+
+################################
+# fallback
+################################
+  - tag: fallback
+    type: fallback
+    args:
+      primary: local_sequence
+      secondary: proxy_sequence
+      threshold: 500
+      always_standby: true
+
+################################
+# gfwlist ipset
+################################
+  - tag: gfw-list
+    type: sequence
+    args:
+      - exec: ttl 300-3600
+      - matches: "!resp_ip $local_ip"
+        exec: ipset gfwlist,inet,24
+      - exec: accept
+
+################################
+# 主流程
+################################
+  - tag: main_sequence
+    type: sequence
+    args:
+
+      # hosts
+      - exec: $hosts
+      - matches: has_resp
+        exec: accept
+
+      # 屏蔽PTR / HTTPS
+      - matches: qtype 12 65
+        exec: reject 0
+
+      # IPv4优先
+      - exec: prefer_ipv4
+
+      # cache
+      - exec: $cache
+
+################################
+# 国内域名
+################################
+
+      - matches: qname &/etc/mosdns/direct-list.txt
+        exec: $forward_local
+
+      - matches: has_resp
+        exec: accept
+
+################################
+# 国外域名
+################################
+
+      - matches: qname &/etc/mosdns/proxy-list.txt
+        exec: $forward_proxy
+
+      - matches: has_resp
+        exec: goto gfw-list
+
+################################
+# 其他域名
+################################
+
+      - exec: $fallback
+
+################################
+# DNS服务器
+################################
+
+  - tag: udp_server
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: :53
+
+  - tag: tcp_server
+    type: tcp_server
+    args:
+      entry: main_sequence
+      listen: :53
