@@ -51,7 +51,9 @@ plugins:
     args:
       concurrent: 2
       upstreams:
+        - addr: 192.168.100.6:1053
         - addr: 192.168.100.10:1053
+        - addr: 192.168.100.11:1053
 
 ################################
 # unbound root递归
